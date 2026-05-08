@@ -380,13 +380,12 @@ class TestBuildSlack:
         assert len(entries) == 1
         assert entries[0]["id"] == "D123"
 
-    def test_lists_channels_from_users_conversations(self, tmp_path):
+    def test_lists_public_channels_from_users_conversations(self, tmp_path):
         client = _make_slack_client([
             {
                 "ok": True,
                 "channels": [
                     {"id": "C0B0QV5434G", "name": "engineering", "is_private": False},
-                    {"id": "G123ABCDEF", "name": "secret-chat", "is_private": True},
                 ],
                 "response_metadata": {},
             },
@@ -395,11 +394,15 @@ class TestBuildSlack:
             entries = asyncio.run(_build_slack(_make_slack_adapter({"T1": client})))
 
         ids = {e["id"] for e in entries}
-        assert ids == {"C0B0QV5434G", "G123ABCDEF"}
+        assert ids == {"C0B0QV5434G"}
         types = {e["id"]: e["type"] for e in entries}
         assert types["C0B0QV5434G"] == "channel"
-        assert types["G123ABCDEF"] == "private"
-        client.users_conversations.assert_awaited_once()
+        client.users_conversations.assert_awaited_once_with(
+            types="public_channel",
+            exclude_archived=True,
+            limit=200,
+            cursor=None,
+        )
 
     def test_paginates_via_response_metadata_cursor(self, tmp_path):
         client = _make_slack_client([
