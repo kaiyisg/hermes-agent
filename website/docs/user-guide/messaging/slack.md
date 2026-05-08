@@ -79,11 +79,12 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 | `users:read` | Look up user information |
 | `files:read` | Read and download attached files, including voice notes/audio |
 | `files:write` | Upload files (images, audio, documents) |
+| `reactions:write` | Add/remove processing status emoji reactions |
 
 :::caution Missing scopes = missing features
 Without `channels:history` and `groups:history`, the bot **will not receive messages in channels** —
 it will only work in DMs. Without `files:read`, Hermes can chat but **cannot reliably read user-uploaded attachments**.
-These are the most commonly missed scopes.
+These are the most commonly missed scopes. Without `reactions:write`, Hermes can still reply, but Slack status emoji feedback (for example 🔄 working, ❓ action needed, ⚠️ blocked/failed, ✅ accepted) will fail silently.
 :::
 
 **Optional scopes:**

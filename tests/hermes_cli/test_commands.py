@@ -27,6 +27,7 @@ from hermes_cli.commands import (
     telegram_bot_commands,
     telegram_menu_commands,
 )
+from hermes_cli.slack_cli import _build_full_manifest
 
 
 def _completions(completer: SlashCommandCompleter, text: str):
@@ -393,6 +394,12 @@ class TestSlackAppManifest:
         m = slack_app_manifest(request_url="https://example.com/slack")
         for entry in m["features"]["slash_commands"]:
             assert entry["url"] == "https://example.com/slack"
+
+    def test_full_manifest_includes_reaction_scope_for_status_emoji(self):
+        """Slack status emoji lifecycle needs reactions:write in the app manifest."""
+        m = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
+        bot_scopes = m["oauth_config"]["scopes"]["bot"]
+        assert "reactions:write" in bot_scopes
 
 
 # ---------------------------------------------------------------------------
