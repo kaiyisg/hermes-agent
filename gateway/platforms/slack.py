@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, Tuple, List
 from urllib.parse import parse_qs, urlsplit
@@ -373,6 +374,8 @@ class SlackAdapter(BasePlatformAdapter):
         # Pending explicit-acceptance state keyed by reaction target.
         # Value includes lightweight metadata for routing follow-up pings/replies.
         self._pending_acceptance_targets: Dict[Tuple[str, str], Dict[str, str]] = {}
+        # Reminder task per pending acceptance target.
+        self._acceptance_reminder_tasks: Dict[Tuple[str, str], asyncio.Task] = {}
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
@@ -1344,6 +1347,59 @@ class SlackAdapter(BasePlatformAdapter):
             channel_id, target_ts = target
             await self._set_status_reaction(channel_id, target_ts, "arrows_counterclockwise")
 
+    def _reminder_intervals_seconds(self) -> List[int]:
+        """Reminder cadence for pending acceptance: default 30m, 1h, 4h, then daily."""
+        raw = os.getenv("SLACK_ACCEPTANCE_REMINDER_SECONDS", "1800,3600,14400,86400")
+        out: List[int] = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                val = int(part)
+                if val > 0:
+                    out.append(val)
+            except Exception:
+                continue
+        return out or [1800, 3600, 14400, 86400]
+
+    def _extract_delegated_user_id(self, text: str) -> Optional[str]:
+        """Heuristic: detect delegated follow-up mentions in plain Slack text."""
+        if not text:
+            return None
+        t = text.lower()
+        delegation_markers = ("follow up", "follow-up", "handle this", "take this", "please handle", "delegate")
+        if not any(marker in t for marker in delegation_markers):
+            return None
+        m = re.search(r"<@([A-Z0-9]+)>", text)
+        return m.group(1) if m else None
+
+    def _cancel_acceptance_reminder(self, target: Tuple[str, str]) -> None:
+        task = self._acceptance_reminder_tasks.pop(target, None)
+        if task and not task.done():
+            task.cancel()
+
+    def _schedule_acceptance_reminders(self, target: Tuple[str, str]) -> None:
+        self._cancel_acceptance_reminder(target)
+
+        async def _runner() -> None:
+            for delay in self._reminder_intervals_seconds():
+                await asyncio.sleep(delay)
+                meta = self._pending_acceptance_targets.get(target)
+                if not meta:
+                    return
+                channel_id = meta.get("channel_id") or target[0]
+                target_ts = meta.get("target_ts") or target[1]
+                user_id = meta.get("followup_user_id") or meta.get("requester_user_id") or ""
+                mention = f"<@{user_id}> " if user_id else ""
+                await self._post_status_reply(
+                    channel_id,
+                    target_ts,
+                    f"{mention}Reminder: still waiting for explicit acceptance. Reply yes/ok/done when this is complete.",
+                )
+
+        self._acceptance_reminder_tasks[target] = asyncio.create_task(_runner())
+
     async def _post_status_reply(self, channel_id: str, thread_ts: str, text: str) -> None:
         """Post a small status note in the thread linked to the main post."""
         if not self._app or not text:
@@ -1378,7 +1434,10 @@ class SlackAdapter(BasePlatformAdapter):
                 "channel_id": channel_id,
                 "target_ts": target_ts,
                 "trigger_message_ts": ts,
+                "requester_user_id": getattr(getattr(event, "source", None), "user_id", "") or "",
+                "followup_user_id": getattr(getattr(event, "source", None), "user_id", "") or "",
             }
+            self._schedule_acceptance_reminders(target)
             await self._post_status_reply(
                 channel_id,
                 target_ts,
@@ -1386,6 +1445,7 @@ class SlackAdapter(BasePlatformAdapter):
             )
         elif outcome == ProcessingOutcome.FAILURE:
             self._pending_acceptance_targets.pop(target, None)
+            self._cancel_acceptance_reminder(target)
             await self._set_status_reaction(channel_id, target_ts, "warning")
             await self._post_status_reply(
                 channel_id,
@@ -1397,7 +1457,10 @@ class SlackAdapter(BasePlatformAdapter):
                 "channel_id": channel_id,
                 "target_ts": target_ts,
                 "trigger_message_ts": ts,
+                "requester_user_id": getattr(getattr(event, "source", None), "user_id", "") or "",
+                "followup_user_id": getattr(getattr(event, "source", None), "user_id", "") or "",
             }
+            self._schedule_acceptance_reminders(target)
             await self._set_status_reaction(channel_id, target_ts, "question")
             await self._post_status_reply(
                 channel_id,
@@ -2290,8 +2353,14 @@ class SlackAdapter(BasePlatformAdapter):
             if target and target in self._pending_acceptance_targets and is_acceptance:
                 await self._set_status_reaction(channel_id, target_ts, "white_check_mark")
                 self._pending_acceptance_targets.pop(target, None)
+                self._cancel_acceptance_reminder(target)
                 await self._post_status_reply(channel_id, target_ts, "Marked ✅ done.")
                 return
+
+            if target and target in self._pending_acceptance_targets:
+                delegated = self._extract_delegated_user_id(event.get("text", "") or text)
+                if delegated:
+                    self._pending_acceptance_targets[target]["followup_user_id"] = delegated
 
             self._reacting_message_ids.add(ts)
             self._reaction_targets[ts] = target

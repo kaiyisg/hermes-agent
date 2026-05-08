@@ -1872,6 +1872,7 @@ class TestReactions:
         adapter._app.client.users_info = AsyncMock(return_value={
             "user": {"profile": {"display_name": "Tyler"}}
         })
+        adapter._schedule_acceptance_reminders = MagicMock()
 
         target = ("C123", "1234567890.000020")
         adapter._pending_acceptance_targets[target] = {
@@ -1880,6 +1881,7 @@ class TestReactions:
             "trigger_message_ts": "1234567890.000019",
         }
         adapter._status_reaction_by_target[target] = "question"
+        adapter._acceptance_reminder_tasks[target] = MagicMock(done=lambda: False, cancel=MagicMock())
 
         event = {
             "text": "yes",
@@ -1899,6 +1901,65 @@ class TestReactions:
         assert add_calls[-1].kwargs["name"] == "white_check_mark"
         assert remove_calls[-1].kwargs["name"] == "question"
         assert target not in adapter._pending_acceptance_targets
+
+    @pytest.mark.asyncio
+    async def test_success_schedules_acceptance_reminders(self, adapter):
+        """Success outcome should queue reminder scheduling for pending acceptance."""
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._schedule_acceptance_reminders = MagicMock()
+
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource, ProcessingOutcome
+        from gateway.config import Platform
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="group",
+            user_id="U_REQ",
+        )
+        msg_event = MessageEvent(
+            text="work",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="1234567890.000030",
+        )
+        adapter._reacting_message_ids.add("1234567890.000030")
+        adapter._reaction_targets["1234567890.000030"] = ("C123", "1234567890.000001")
+
+        await adapter.on_processing_complete(msg_event, ProcessingOutcome.SUCCESS)
+
+        adapter._schedule_acceptance_reminders.assert_called_once_with(("C123", "1234567890.000001"))
+
+    @pytest.mark.asyncio
+    async def test_delegation_updates_followup_user(self, adapter, monkeypatch):
+        """Delegation hint should update the reminder follow-up user."""
+        monkeypatch.setenv("SLACK_REQUIRE_MENTION", "false")
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        target = ("C123", "1234567890.000020")
+        adapter._pending_acceptance_targets[target] = {
+            "channel_id": "C123",
+            "target_ts": "1234567890.000020",
+            "trigger_message_ts": "1234567890.000019",
+            "requester_user_id": "U_REQ",
+            "followup_user_id": "U_REQ",
+        }
+
+        event = {
+            "text": "please follow up <@UDELEGATE>",
+            "user": "U_REQ",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000022",
+            "thread_ts": "1234567890.000020",
+        }
+        await adapter._handle_slack_message(event)
+
+        assert adapter._pending_acceptance_targets[target]["followup_user_id"] == "UDELEGATE"
 
     @pytest.mark.asyncio
     async def test_reactions_disabled_via_env(self, adapter, monkeypatch):
