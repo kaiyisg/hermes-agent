@@ -150,9 +150,10 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
     """List Slack channels the bot has joined across all workspaces.
 
     Uses ``users.conversations`` against each workspace's web client. Pulls
-    public + private channels the bot is a member of, then merges in DMs
-    discovered from session history (IMs aren't useful to enumerate
-    proactively).
+    public channels proactively, then merges in DMs/private channels discovered
+    from session history. Private channel enumeration requires Slack ``groups:*``
+    scopes; do not request it here so public-channel directory refreshes stay
+    quiet for least-privilege Slack apps.
     """
     team_clients = getattr(adapter, "_team_clients", None) or {}
     if not team_clients:
@@ -166,7 +167,7 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
             cursor: Optional[str] = None
             for _page in range(20):  # safety cap on pagination
                 response = await client.users_conversations(
-                    types="public_channel,private_channel",
+                    types="public_channel",
                     exclude_archived=True,
                     limit=200,
                     cursor=cursor,
