@@ -2338,18 +2338,24 @@ class SlackAdapter(BasePlatformAdapter):
         target_ts = event_thread_ts or ts
         target = (channel_id, target_ts) if channel_id and target_ts else None
         if self._reactions_enabled() and ts and channel_id:
-            # If this message is a clear acceptance on a pending target, mark
-            # done immediately and skip full agent processing.
+            # If this message is an explicit acceptance on a pending target,
+            # mark done immediately and skip full agent processing.
+            #
+            # Important UX rule: do NOT treat generic replies like "yes/ok/+1"
+            # as acceptance. Those are commonly used for plan-run confirmation
+            # and should continue through normal message handling.
             normalized_text = re.sub(r"[^a-z0-9+ ]+", " ", (text or "").strip().lower())
-            acceptance_tokens = {
-                "yes", "y", "yep", "yeah", "ok", "okay", "looks good", "lgtm", "done", "+1", "agree",
+            explicit_acceptance_tokens = {
+                "accepted",
+                "accept",
+                "acknowledged",
+                "ack",
+                "approved",
+                "approve",
+                "resolved",
+                "done accepted",
             }
-            is_acceptance = (
-                normalized_text in acceptance_tokens
-                or normalized_text.startswith("yes ")
-                or normalized_text.startswith("ok ")
-                or normalized_text.startswith("done ")
-            )
+            is_acceptance = normalized_text in explicit_acceptance_tokens
             if target and target in self._pending_acceptance_targets and is_acceptance:
                 await self._set_status_reaction(channel_id, target_ts, "white_check_mark")
                 self._pending_acceptance_targets.pop(target, None)

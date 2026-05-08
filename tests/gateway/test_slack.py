@@ -1864,8 +1864,8 @@ class TestReactions:
         assert adapter._reaction_targets["1234567890.000010"] == ("C123", "1234567890.000001")
 
     @pytest.mark.asyncio
-    async def test_acceptance_message_marks_pending_target_done(self, adapter, monkeypatch):
-        """A clear yes/ok/done reply should flip pending question status to done."""
+    async def test_explicit_acceptance_message_marks_pending_target_done(self, adapter, monkeypatch):
+        """Only explicit acceptance terms should flip pending question status to done."""
         monkeypatch.setenv("SLACK_REQUIRE_MENTION", "false")
         adapter._app.client.reactions_add = AsyncMock()
         adapter._app.client.reactions_remove = AsyncMock()
@@ -1884,7 +1884,7 @@ class TestReactions:
         adapter._acceptance_reminder_tasks[target] = MagicMock(done=lambda: False, cancel=MagicMock())
 
         event = {
-            "text": "yes",
+            "text": "accepted",
             "user": "U_USER",
             "channel": "C123",
             "channel_type": "channel",
@@ -1901,6 +1901,38 @@ class TestReactions:
         assert add_calls[-1].kwargs["name"] == "white_check_mark"
         assert remove_calls[-1].kwargs["name"] == "question"
         assert target not in adapter._pending_acceptance_targets
+
+    @pytest.mark.asyncio
+    async def test_yes_does_not_auto_accept_pending_target(self, adapter, monkeypatch):
+        """Generic 'yes' should continue normal flow (e.g. plan-run), not mark done."""
+        monkeypatch.setenv("SLACK_REQUIRE_MENTION", "false")
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        target = ("C123", "1234567890.000020")
+        adapter._pending_acceptance_targets[target] = {
+            "channel_id": "C123",
+            "target_ts": "1234567890.000020",
+            "trigger_message_ts": "1234567890.000019",
+        }
+        adapter._status_reaction_by_target[target] = "question"
+
+        event = {
+            "text": "yes",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000021",
+            "thread_ts": "1234567890.000020",
+        }
+        await adapter._handle_slack_message(event)
+
+        # Should continue normal processing instead of short-circuit acceptance.
+        adapter.handle_message.assert_awaited_once()
+        assert target in adapter._pending_acceptance_targets
 
     @pytest.mark.asyncio
     async def test_success_schedules_acceptance_reminders(self, adapter):
